@@ -1,12 +1,12 @@
 /*
  * Copyright 1999-2012 Alibaba Group.
- *  
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -22,10 +22,8 @@ import java.util.Map;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.atomic.AtomicBoolean;
-
 import org.apache.log4j.Logger;
 import org.apache.log4j.helpers.LogLog;
-
 import com.alibaba.cobar.config.model.SystemConfig;
 import com.alibaba.cobar.manager.ManagerConnectionFactory;
 import com.alibaba.cobar.mysql.MySQLDataNode;
@@ -49,11 +47,8 @@ public class CobarServer {
     private static final CobarServer INSTANCE = new CobarServer();
     private static final Logger LOGGER = Logger.getLogger(CobarServer.class);
 
-    public static final CobarServer getInstance() {
-        return INSTANCE;
-    }
-
     private final CobarConfig config;
+
     private final Timer timer;
     private final NameableExecutor managerExecutor;
     private final NameableExecutor timerExecutor;
@@ -65,6 +60,9 @@ public class CobarServer {
     private NIOConnector connector;
     private NIOAcceptor manager;
     private NIOAcceptor server;
+    public static final CobarServer getInstance() {
+        return INSTANCE;
+    }
 
     private CobarServer() {
         this.config = new CobarConfig();
@@ -79,10 +77,6 @@ public class CobarServer {
         this.startupTime = TimeUtil.currentTimeMillis();
     }
 
-    public CobarConfig getConfig() {
-        return config;
-    }
-
     public void beforeStart(String dateFormat) {
         String home = System.getProperty("cobar.home");
         if (home == null) {
@@ -91,6 +85,50 @@ public class CobarServer {
         } else {
             Log4jInitializer.configureAndWatch(home + "/conf/log4j.xml", LOG_WATCH_DELAY);
         }
+    }
+
+    public CobarConfig getConfig() {
+        return config;
+    }
+
+    public NIOConnector getConnector() {
+        return connector;
+    }
+
+    public NameableExecutor getInitExecutor() {
+        return initExecutor;
+    }
+
+    public NameableExecutor getManagerExecutor() {
+        return managerExecutor;
+    }
+
+    public NIOProcessor[] getProcessors() {
+        return processors;
+    }
+
+    public SQLRecorder getSqlRecorder() {
+        return sqlRecorder;
+    }
+
+    public long getStartupTime() {
+        return startupTime;
+    }
+
+    public NameableExecutor getTimerExecutor() {
+        return timerExecutor;
+    }
+
+    public boolean isOnline() {
+        return isOnline.get();
+    }
+
+    public void offline() {
+        isOnline.set(false);
+    }
+
+    public void online() {
+        isOnline.set(true);
     }
 
     public void startup() throws IOException {
@@ -128,7 +166,7 @@ public class CobarServer {
 
         // startup manager
         ManagerConnectionFactory mf = new ManagerConnectionFactory();
-        mf.setCharset(system.getCharset());
+		mf.setCharset(system.getCharset());
         mf.setIdleTimeout(system.getIdleTimeout());
         manager = new NIOAcceptor(NAME + "Manager", system.getManagerPort(), mf);
         manager.setProcessors(processors);
@@ -137,7 +175,7 @@ public class CobarServer {
 
         // startup server
         ServerConnectionFactory sf = new ServerConnectionFactory();
-        sf.setCharset(system.getCharset());
+        sf.setCharset("utf8mb4");
         sf.setIdleTimeout(system.getIdleTimeout());
         server = new NIOAcceptor(NAME + "Server", system.getServerPort(), sf);
         server.setProcessors(processors);
@@ -149,66 +187,35 @@ public class CobarServer {
         LOGGER.info("===============================================");
     }
 
-    public NIOProcessor[] getProcessors() {
-        return processors;
-    }
-
-    public NIOConnector getConnector() {
-        return connector;
-    }
-
-    public NameableExecutor getManagerExecutor() {
-        return managerExecutor;
-    }
-
-    public NameableExecutor getTimerExecutor() {
-        return timerExecutor;
-    }
-
-    public NameableExecutor getInitExecutor() {
-        return initExecutor;
-    }
-
-    public SQLRecorder getSqlRecorder() {
-        return sqlRecorder;
-    }
-
-    public long getStartupTime() {
-        return startupTime;
-    }
-
-    public boolean isOnline() {
-        return isOnline.get();
-    }
-
-    public void offline() {
-        isOnline.set(false);
-    }
-
-    public void online() {
-        isOnline.set(true);
-    }
-
-    // 系统时间定时更新任务
-    private TimerTask updateTime() {
-        return new TimerTask() {
-            @Override
-            public void run() {
-                TimeUtil.update();
-            }
-        };
-    }
-
-    // 处理器定时检查任务
-    private TimerTask processorCheck() {
+    // 集群节点定时心跳任务
+    private TimerTask clusterHeartbeat() {
         return new TimerTask() {
             @Override
             public void run() {
                 timerExecutor.execute(new Runnable() {
                     @Override
                     public void run() {
-                        for (NIOProcessor p : processors) {
-                            p.check();
+                        Map<String, CobarNode> nodes = config.getCluster().getNodes();
+                        for (CobarNode node : nodes.values()) {
+                            node.doHeartbeat();
+                        }
+                    }
+                });
+            }
+        };
+    }
+
+    // 数据节点定时心跳任务
+    private TimerTask dataNodeHeartbeat() {
+        return new TimerTask() {
+            @Override
+            public void run() {
+                timerExecutor.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        Map<String, MySQLDataNode> nodes = config.getDataNodes();
+                        for (MySQLDataNode node : nodes.values()) {
+                            node.doHeartbeat();
                         }
                     }
                 });
@@ -240,17 +247,16 @@ public class CobarServer {
         };
     }
 
-    // 数据节点定时心跳任务
-    private TimerTask dataNodeHeartbeat() {
+    // 处理器定时检查任务
+    private TimerTask processorCheck() {
         return new TimerTask() {
             @Override
             public void run() {
                 timerExecutor.execute(new Runnable() {
                     @Override
                     public void run() {
-                        Map<String, MySQLDataNode> nodes = config.getDataNodes();
-                        for (MySQLDataNode node : nodes.values()) {
-                            node.doHeartbeat();
+                        for (NIOProcessor p : processors) {
+                            p.check();
                         }
                     }
                 });
@@ -258,20 +264,12 @@ public class CobarServer {
         };
     }
 
-    // 集群节点定时心跳任务
-    private TimerTask clusterHeartbeat() {
+    // 系统时间定时更新任务
+    private TimerTask updateTime() {
         return new TimerTask() {
             @Override
             public void run() {
-                timerExecutor.execute(new Runnable() {
-                    @Override
-                    public void run() {
-                        Map<String, CobarNode> nodes = config.getCluster().getNodes();
-                        for (CobarNode node : nodes.values()) {
-                            node.doHeartbeat();
-                        }
-                    }
-                });
+                TimeUtil.update();
             }
         };
     }

@@ -1,12 +1,12 @@
 /*
  * Copyright 1999-2012 Alibaba Group.
- *  
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -22,7 +22,7 @@ import java.util.Map;
  * @author xianmao.hexm 2010-8-3 下午06:12:53
  */
 public class CharsetUtil {
-    private static final String[] INDEX_TO_CHARSET = new String[99];
+	private static final String[] INDEX_TO_CHARSET = new String[225];
     private static final Map<String, Integer> CHARSET_TO_INDEX = new HashMap<String, Integer>();
     static {
         // index --> charset
@@ -117,6 +117,7 @@ public class CharsetUtil {
         INDEX_TO_CHARSET[96] = "cp932";
         INDEX_TO_CHARSET[97] = "eucjpms";
         INDEX_TO_CHARSET[98] = "eucjpms";
+		INDEX_TO_CHARSET[224] = "utf8";
 
         // charset --> index
         for (int i = 0; i < INDEX_TO_CHARSET.length; i++) {
@@ -128,6 +129,7 @@ public class CharsetUtil {
         CHARSET_TO_INDEX.put("iso-8859-1", 14);
         CHARSET_TO_INDEX.put("iso_8859_1", 14);
         CHARSET_TO_INDEX.put("utf-8", 33);
+		CHARSET_TO_INDEX.put("utf8mb4", 224);
     }
 
     public static final String getCharset(int index) {
@@ -139,7 +141,7 @@ public class CharsetUtil {
             return 0;
         } else {
             Integer i = CHARSET_TO_INDEX.get(charset.toLowerCase());
-            return (i == null) ? 0 : i.intValue();
+            return i == null ? 0 : i.intValue();
         }
     }
 

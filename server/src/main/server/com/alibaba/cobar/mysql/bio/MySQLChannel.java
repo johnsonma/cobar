@@ -29,9 +29,7 @@ import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
-
 import org.apache.log4j.Logger;
-
 import com.alibaba.cobar.CobarServer;
 import com.alibaba.cobar.config.Capabilities;
 import com.alibaba.cobar.config.Isolations;
@@ -121,6 +119,33 @@ public final class MySQLChannel implements Channel {
     private final AtomicBoolean isClosed;
     private long lastActiveTime;
 
+    /**
+     * 与MySQL连接时的一些特性指定
+     */
+    private static long getClientFlags() {
+        int flag = 0;
+        flag |= Capabilities.CLIENT_LONG_PASSWORD;
+        flag |= Capabilities.CLIENT_FOUND_ROWS;
+        flag |= Capabilities.CLIENT_LONG_FLAG;
+        flag |= Capabilities.CLIENT_CONNECT_WITH_DB;
+        // flag |= Capabilities.CLIENT_NO_SCHEMA;
+        // flag |= Capabilities.CLIENT_COMPRESS;
+        flag |= Capabilities.CLIENT_ODBC;
+        // flag |= Capabilities.CLIENT_LOCAL_FILES;
+        flag |= Capabilities.CLIENT_IGNORE_SPACE;
+        flag |= Capabilities.CLIENT_PROTOCOL_41;
+        flag |= Capabilities.CLIENT_INTERACTIVE;
+        // flag |= Capabilities.CLIENT_SSL;
+        flag |= Capabilities.CLIENT_IGNORE_SIGPIPE;
+        flag |= Capabilities.CLIENT_TRANSACTIONS;
+        // flag |= Capabilities.CLIENT_RESERVED;
+        flag |= Capabilities.CLIENT_SECURE_CONNECTION;
+        // client extension
+        // flag |= Capabilities.CLIENT_MULTI_STATEMENTS;
+        // flag |= Capabilities.CLIENT_MULTI_RESULTS;
+        return flag;
+    }
+
     public MySQLChannel(MySQLDataSource dataSource) {
         this.dataSource = dataSource;
         this.dsc = dataSource.getConfig();
@@ -130,33 +155,28 @@ public final class MySQLChannel implements Channel {
         this.lastActiveTime = TimeUtil.currentTimeMillis();
     }
 
-    public String getCharset() {
-        return charset;
+    @Override
+    public void close() {
+        if (isClosed.compareAndSet(false, true)) {
+            try {
+                mysqlClose();
+            } finally {
+                dataSource.deActive();
+            }
+        }
     }
 
     @Override
-    public long getLastAcitveTime() {
-        return lastActiveTime;
+    public void closeNoActive() {
+        if (isClosed.compareAndSet(false, true)) {
+            mysqlClose();
+        }
     }
 
-    @Override
-    public void setLastActiveTime(long time) {
-        this.lastActiveTime = time;
-    }
-
-    @Override
-    public boolean isAutocommit() {
-        return autocommit;
-    }
-
-    @Override
-    public boolean isRunning() {
-        return isRunning;
-    }
-
-    @Override
-    public void setRunning(boolean running) {
-        this.isRunning = running;
+    public BinaryPacket commit() throws IOException {
+        _COMMIT.write(out);
+        out.flush();
+        return receive();
     }
 
     @Override
@@ -232,27 +252,46 @@ public final class MySQLChannel implements Channel {
         return bin;
     }
 
-    public BinaryPacket receive() throws IOException {
-        BinaryPacket bin = new BinaryPacket();
-        bin.read(in);
-        return bin;
+    public String getCharset() {
+        return charset;
     }
 
-    public BinaryPacket commit() throws IOException {
-        _COMMIT.write(out);
-        out.flush();
-        return receive();
+    public String getErrLog(String stmt, String info, ServerConnection source) {
+        StringBuilder s = new StringBuilder();
+        s.append("\n MSG:").append(info);
+        s.append("\n ROUTE:").append(source).append(" -> ").append(this);
+        s.append("\n SQL:").append(stmt);
+        return s.toString();
     }
 
-    public BinaryPacket rollback() throws IOException {
-        _ROLLBACK.write(out);
-        out.flush();
-        return receive();
+    public String getErrMessage(BinaryPacket bin) {
+        String message = null;
+        ErrorPacket err = new ErrorPacket();
+        err.read(bin);
+        if (err.message != null) {
+            message = StringUtil.decode(err.message, charset);
+        }
+        return message;
+    }
+
+    @Override
+    public long getLastAcitveTime() {
+        return lastActiveTime;
+    }
+
+    @Override
+    public boolean isAutocommit() {
+        return autocommit;
     }
 
     @Override
     public boolean isClosed() {
         return isClosed.get();
+    }
+
+    @Override
+    public boolean isRunning() {
+        return isRunning;
     }
 
     @Override
@@ -267,22 +306,10 @@ public final class MySQLChannel implements Channel {
         }
     }
 
-    @Override
-    public void close() {
-        if (isClosed.compareAndSet(false, true)) {
-            try {
-                mysqlClose();
-            } finally {
-                dataSource.deActive();
-            }
-        }
-    }
-
-    @Override
-    public void closeNoActive() {
-        if (isClosed.compareAndSet(false, true)) {
-            mysqlClose();
-        }
+    public BinaryPacket receive() throws IOException {
+        BinaryPacket bin = new BinaryPacket();
+        bin.read(in);
+        return bin;
     }
 
     @Override
@@ -290,22 +317,20 @@ public final class MySQLChannel implements Channel {
         dataSource.releaseChannel(this);
     }
 
-    public String getErrMessage(BinaryPacket bin) {
-        String message = null;
-        ErrorPacket err = new ErrorPacket();
-        err.read(bin);
-        if (err.message != null) {
-            message = StringUtil.decode(err.message, charset);
-        }
-        return message;
+    public BinaryPacket rollback() throws IOException {
+        _ROLLBACK.write(out);
+        out.flush();
+        return receive();
     }
 
-    public String getErrLog(String stmt, String info, ServerConnection source) {
-        StringBuilder s = new StringBuilder();
-        s.append("\n MSG:").append(info);
-        s.append("\n ROUTE:").append(source).append(" -> ").append(this);
-        s.append("\n SQL:").append(stmt);
-        return s.toString();
+    @Override
+    public void setLastActiveTime(long time) {
+        this.lastActiveTime = time;
+    }
+
+    @Override
+    public void setRunning(boolean running) {
+        this.isRunning = running;
     }
 
     @Override
@@ -314,6 +339,88 @@ public final class MySQLChannel implements Channel {
         s.append("[host=").append(dsc.getHost()).append(",port=").append(dsc.getPort());
         s.append(",schema=").append(dsc.getDatabase()).append(']');
         return s.toString();
+    }
+
+    /**
+     * 连接和验证成功以后
+     */
+    private void afterSuccess() throws IOException {
+        if (dsc.getSqlMode() != null) {
+            sendSqlMode();
+        }
+        // 为防止握手阶段字符集编码交互无效，连接成功之后做一次字符集编码同步。
+        sendCharset(charsetIndex);
+    }
+
+    /**
+     * 323协议认证
+     */
+    private void auth323(byte packetId, byte[] seed) throws IOException {
+        Reply323Packet r323 = new Reply323Packet();
+        r323.packetId = ++packetId;
+        String passwd = dsc.getPassword();
+        if (passwd != null && passwd.length() > 0) {
+            r323.seed = SecurityUtil.scramble323(passwd, new String(seed)).getBytes();
+        }
+        r323.write(out);
+        out.flush();
+        BinaryPacket bin = receive();
+        switch (bin.data[0]) {
+        case OkPacket.FIELD_COUNT:
+            afterSuccess();
+            break;
+        case ErrorPacket.FIELD_COUNT:
+            ErrorPacket err = new ErrorPacket();
+            err.read(bin);
+            throw new ErrorPacketException(new String(err.message, charset));
+        default:
+            throw new UnknownPacketException(bin.toString());
+        }
+    }
+
+    private CommandPacket getAutocommitCommand(boolean autocommit) {
+        return autocommit ? _AUTOCOMMIT_ON : _AUTOCOMMIT_OFF;
+    }
+
+    private CommandPacket getCharsetCommand(int ci) {
+    	String charset = "";
+        if (ci == 224) {
+         charset = "utf8mb4";
+        } else {
+         charset = CharsetUtil.getCharset(ci);
+        }
+        StringBuilder s = new StringBuilder();
+        s.append("SET names ").append(charset);
+        CommandPacket cmd = new CommandPacket();
+        cmd.packetId = 0;
+        cmd.command = MySQLPacket.COM_QUERY;
+        cmd.arg = s.toString().getBytes();
+        return cmd;
+    }
+
+    private CommandPacket getSqlModeCommand() {
+        StringBuilder s = new StringBuilder();
+        s.append("SET sql_mode=\"").append(dsc.getSqlMode()).append('"');
+        CommandPacket cmd = new CommandPacket();
+        cmd.packetId = 0;
+        cmd.command = MySQLPacket.COM_QUERY;
+        cmd.arg = s.toString().getBytes();
+        return cmd;
+    }
+
+    private CommandPacket getTxIsolationCommand(int txIsolation) {
+        switch (txIsolation) {
+        case Isolations.READ_UNCOMMITTED:
+            return _READ_UNCOMMITTED;
+        case Isolations.READ_COMMITTED:
+            return _READ_COMMITTED;
+        case Isolations.REPEATED_READ:
+            return _REPEATED_READ;
+        case Isolations.SERIALIZABLE:
+            return _SERIALIZABLE;
+        default:
+            throw new UnknownTxIsolationException("txIsolation:" + txIsolation);
+        }
     }
 
     private MySQLChannel handshake() throws IOException {
@@ -355,193 +462,6 @@ public final class MySQLChannel implements Channel {
         }
 
         return this;
-    }
-
-    /**
-     * 发送411协议的认证数据包
-     */
-    private BinaryPacket sendAuth411(HandshakePacket hsp) throws IOException, NoSuchAlgorithmException {
-        AuthPacket ap = new AuthPacket();
-        ap.packetId = 1;
-        ap.clientFlags = CLIENT_FLAGS;
-        ap.maxPacketSize = MAX_PACKET_SIZE;
-        ap.charsetIndex = charsetIndex;
-        ap.user = dsc.getUser();
-        String passwd = dsc.getPassword();
-        if (passwd != null && passwd.length() > 0) {
-            byte[] password = passwd.getBytes(charset);
-            byte[] seed = hsp.seed;
-            byte[] restOfScramble = hsp.restOfScrambleBuff;
-            byte[] authSeed = new byte[seed.length + restOfScramble.length];
-            System.arraycopy(seed, 0, authSeed, 0, seed.length);
-            System.arraycopy(restOfScramble, 0, authSeed, seed.length, restOfScramble.length);
-            ap.password = SecurityUtil.scramble411(password, authSeed);
-        }
-        ap.database = dsc.getDatabase();
-        ap.write(out);
-        out.flush();
-        return receive();
-    }
-
-    /**
-     * 323协议认证
-     */
-    private void auth323(byte packetId, byte[] seed) throws IOException {
-        Reply323Packet r323 = new Reply323Packet();
-        r323.packetId = ++packetId;
-        String passwd = dsc.getPassword();
-        if (passwd != null && passwd.length() > 0) {
-            r323.seed = SecurityUtil.scramble323(passwd, new String(seed)).getBytes();
-        }
-        r323.write(out);
-        out.flush();
-        BinaryPacket bin = receive();
-        switch (bin.data[0]) {
-        case OkPacket.FIELD_COUNT:
-            afterSuccess();
-            break;
-        case ErrorPacket.FIELD_COUNT:
-            ErrorPacket err = new ErrorPacket();
-            err.read(bin);
-            throw new ErrorPacketException(new String(err.message, charset));
-        default:
-            throw new UnknownPacketException(bin.toString());
-        }
-    }
-
-    /**
-     * 连接和验证成功以后
-     */
-    private void afterSuccess() throws IOException {
-        if (dsc.getSqlMode() != null) {
-            sendSqlMode();
-        }
-        // 为防止握手阶段字符集编码交互无效，连接成功之后做一次字符集编码同步。
-        sendCharset(charsetIndex);
-    }
-
-    /**
-     * 发送SQL_MODE设置
-     */
-    private void sendSqlMode() throws IOException {
-        CommandPacket cmd = getSqlModeCommand();
-        cmd.write(out);
-        out.flush();
-        BinaryPacket bin = receive();
-        switch (bin.data[0]) {
-        case OkPacket.FIELD_COUNT:
-            break;
-        case ErrorPacket.FIELD_COUNT:
-            ErrorPacket err = new ErrorPacket();
-            err.read(bin);
-            throw new ErrorPacketException(new String(err.message, charset));
-        default:
-            throw new UnknownPacketException(bin.toString());
-        }
-    }
-
-    /**
-     * 发送字符集设置
-     */
-    private void sendCharset(int ci) throws IOException {
-        CommandPacket cmd = getCharsetCommand(ci);
-        cmd.write(out);
-        out.flush();
-        BinaryPacket bin = receive();
-        switch (bin.data[0]) {
-        case OkPacket.FIELD_COUNT:
-            this.charsetIndex = ci;
-            this.charset = CharsetUtil.getCharset(ci);
-            break;
-        case ErrorPacket.FIELD_COUNT:
-            ErrorPacket err = new ErrorPacket();
-            err.read(bin);
-            throw new ErrorPacketException(new String(err.message, charset));
-        default:
-            throw new UnknownPacketException(bin.toString());
-        }
-    }
-
-    /**
-     * 发送事务级别设置
-     */
-    private void sendTxIsolation(int txIsolation) throws IOException {
-        CommandPacket cmd = getTxIsolationCommand(txIsolation);
-        cmd.write(out);
-        out.flush();
-        BinaryPacket bin = receive();
-        switch (bin.data[0]) {
-        case OkPacket.FIELD_COUNT:
-            this.txIsolation = txIsolation;
-            break;
-        case ErrorPacket.FIELD_COUNT:
-            ErrorPacket err = new ErrorPacket();
-            err.read(bin);
-            throw new ErrorPacketException(new String(err.message, charset));
-        default:
-            throw new UnknownPacketException(bin.toString());
-        }
-    }
-
-    /**
-     * 发送事务递交模式设置
-     */
-    private void sendAutocommit(boolean autocommit) throws IOException {
-        CommandPacket cmd = getAutocommitCommand(autocommit);
-        cmd.write(out);
-        out.flush();
-        BinaryPacket bin = receive();
-        switch (bin.data[0]) {
-        case OkPacket.FIELD_COUNT:
-            this.autocommit = autocommit;
-            break;
-        case ErrorPacket.FIELD_COUNT:
-            ErrorPacket err = new ErrorPacket();
-            err.read(bin);
-            throw new ErrorPacketException(new String(err.message, charset));
-        default:
-            throw new UnknownPacketException(bin.toString());
-        }
-    }
-
-    private CommandPacket getSqlModeCommand() {
-        StringBuilder s = new StringBuilder();
-        s.append("SET sql_mode=\"").append(dsc.getSqlMode()).append('"');
-        CommandPacket cmd = new CommandPacket();
-        cmd.packetId = 0;
-        cmd.command = MySQLPacket.COM_QUERY;
-        cmd.arg = s.toString().getBytes();
-        return cmd;
-    }
-
-    private CommandPacket getCharsetCommand(int ci) {
-        String charset = CharsetUtil.getCharset(ci);
-        StringBuilder s = new StringBuilder();
-        s.append("SET names ").append(charset);
-        CommandPacket cmd = new CommandPacket();
-        cmd.packetId = 0;
-        cmd.command = MySQLPacket.COM_QUERY;
-        cmd.arg = s.toString().getBytes();
-        return cmd;
-    }
-
-    private CommandPacket getTxIsolationCommand(int txIsolation) {
-        switch (txIsolation) {
-        case Isolations.READ_UNCOMMITTED:
-            return _READ_UNCOMMITTED;
-        case Isolations.READ_COMMITTED:
-            return _READ_COMMITTED;
-        case Isolations.REPEATED_READ:
-            return _REPEATED_READ;
-        case Isolations.SERIALIZABLE:
-            return _SERIALIZABLE;
-        default:
-            throw new UnknownTxIsolationException("txIsolation:" + txIsolation);
-        }
-    }
-
-    private CommandPacket getAutocommitCommand(boolean autocommit) {
-        return autocommit ? _AUTOCOMMIT_ON : _AUTOCOMMIT_OFF;
     }
 
     private void killChannel() {
@@ -619,30 +539,113 @@ public final class MySQLChannel implements Channel {
     }
 
     /**
-     * 与MySQL连接时的一些特性指定
+     * 发送411协议的认证数据包
      */
-    private static long getClientFlags() {
-        int flag = 0;
-        flag |= Capabilities.CLIENT_LONG_PASSWORD;
-        flag |= Capabilities.CLIENT_FOUND_ROWS;
-        flag |= Capabilities.CLIENT_LONG_FLAG;
-        flag |= Capabilities.CLIENT_CONNECT_WITH_DB;
-        // flag |= Capabilities.CLIENT_NO_SCHEMA;
-        // flag |= Capabilities.CLIENT_COMPRESS;
-        flag |= Capabilities.CLIENT_ODBC;
-        // flag |= Capabilities.CLIENT_LOCAL_FILES;
-        flag |= Capabilities.CLIENT_IGNORE_SPACE;
-        flag |= Capabilities.CLIENT_PROTOCOL_41;
-        flag |= Capabilities.CLIENT_INTERACTIVE;
-        // flag |= Capabilities.CLIENT_SSL;
-        flag |= Capabilities.CLIENT_IGNORE_SIGPIPE;
-        flag |= Capabilities.CLIENT_TRANSACTIONS;
-        // flag |= Capabilities.CLIENT_RESERVED;
-        flag |= Capabilities.CLIENT_SECURE_CONNECTION;
-        // client extension
-        // flag |= Capabilities.CLIENT_MULTI_STATEMENTS;
-        // flag |= Capabilities.CLIENT_MULTI_RESULTS;
-        return flag;
+    private BinaryPacket sendAuth411(HandshakePacket hsp) throws IOException, NoSuchAlgorithmException {
+        AuthPacket ap = new AuthPacket();
+        ap.packetId = 1;
+        ap.clientFlags = CLIENT_FLAGS;
+        ap.maxPacketSize = MAX_PACKET_SIZE;
+        ap.charsetIndex = charsetIndex;
+        ap.user = dsc.getUser();
+        String passwd = dsc.getPassword();
+        if (passwd != null && passwd.length() > 0) {
+            byte[] password = passwd.getBytes(charset);
+            byte[] seed = hsp.seed;
+            byte[] restOfScramble = hsp.restOfScrambleBuff;
+            byte[] authSeed = new byte[seed.length + restOfScramble.length];
+            System.arraycopy(seed, 0, authSeed, 0, seed.length);
+            System.arraycopy(restOfScramble, 0, authSeed, seed.length, restOfScramble.length);
+            ap.password = SecurityUtil.scramble411(password, authSeed);
+        }
+        ap.database = dsc.getDatabase();
+        ap.write(out);
+        out.flush();
+        return receive();
+    }
+
+    /**
+     * 发送事务递交模式设置
+     */
+    private void sendAutocommit(boolean autocommit) throws IOException {
+        CommandPacket cmd = getAutocommitCommand(autocommit);
+        cmd.write(out);
+        out.flush();
+        BinaryPacket bin = receive();
+        switch (bin.data[0]) {
+        case OkPacket.FIELD_COUNT:
+            this.autocommit = autocommit;
+            break;
+        case ErrorPacket.FIELD_COUNT:
+            ErrorPacket err = new ErrorPacket();
+            err.read(bin);
+            throw new ErrorPacketException(new String(err.message, charset));
+        default:
+            throw new UnknownPacketException(bin.toString());
+        }
+    }
+
+    /**
+     * 发送字符集设置
+     */
+    private void sendCharset(int ci) throws IOException {
+        CommandPacket cmd = getCharsetCommand(ci);
+        cmd.write(out);
+        out.flush();
+        BinaryPacket bin = receive();
+        switch (bin.data[0]) {
+        case OkPacket.FIELD_COUNT:
+            this.charsetIndex = ci;
+            this.charset = CharsetUtil.getCharset(ci);
+            break;
+        case ErrorPacket.FIELD_COUNT:
+            ErrorPacket err = new ErrorPacket();
+            err.read(bin);
+            throw new ErrorPacketException(new String(err.message, charset));
+        default:
+            throw new UnknownPacketException(bin.toString());
+        }
+    }
+
+    /**
+     * 发送SQL_MODE设置
+     */
+    private void sendSqlMode() throws IOException {
+        CommandPacket cmd = getSqlModeCommand();
+        cmd.write(out);
+        out.flush();
+        BinaryPacket bin = receive();
+        switch (bin.data[0]) {
+        case OkPacket.FIELD_COUNT:
+            break;
+        case ErrorPacket.FIELD_COUNT:
+            ErrorPacket err = new ErrorPacket();
+            err.read(bin);
+            throw new ErrorPacketException(new String(err.message, charset));
+        default:
+            throw new UnknownPacketException(bin.toString());
+        }
+    }
+
+    /**
+     * 发送事务级别设置
+     */
+    private void sendTxIsolation(int txIsolation) throws IOException {
+        CommandPacket cmd = getTxIsolationCommand(txIsolation);
+        cmd.write(out);
+        out.flush();
+        BinaryPacket bin = receive();
+        switch (bin.data[0]) {
+        case OkPacket.FIELD_COUNT:
+            this.txIsolation = txIsolation;
+            break;
+        case ErrorPacket.FIELD_COUNT:
+            ErrorPacket err = new ErrorPacket();
+            err.read(bin);
+            throw new ErrorPacketException(new String(err.message, charset));
+        default:
+            throw new UnknownPacketException(bin.toString());
+        }
     }
 
 }
